@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>112 Simulator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;min-height:100vh;}
+button{font-family:inherit;}
+input{font-family:inherit;}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── MODI ──────────────────────────────────
+const MODES = {
+  young:  { id:'young',  label:'4–6 jaar',   icon:'🌟', primary:'#f97316', light:'#fff7ed', quizOpts:2, fs:18,
+    p3sys:`Je bent een héél vriendelijke 112-medewerker in een EDUCATIEVE SIMULATOR voor kinderen van 4-6 jaar. Gebruik ZEER KORTE zinnen (max 6 woorden). Stel maximaal 3 vragen. Begin altijd met: "Hoi! Hier is 112! Wat is er?" Sluit ALTIJD af met: "Hulp is onderweg! Heel goed gedaan!" en voeg [KLAAR] toe. ABSOLUUT VERBODEN: instructies, EHBO, adviezen.` },
+  mid:    { id:'mid',    label:'7–9 jaar',   icon:'🚀', primary:'#2563eb', light:'#eff6ff', quizOpts:4, fs:15,
+    p3sys:`Je bent een rustige professionele centralist bij 112 in een EDUCATIEVE SIMULATOR voor kinderen van 7-9. Open met: "112, wie wilt u spreken: politie, brandweer of ambulance?" Verbind door naar regionaal. Vraag: locatie → telefoonnummer → situatie → max 2 sleutelvragen. Sluit ALTIJD af met: "De [dienst] is onderweg. Blijf aan de lijn." en [KLAAR]. ABSOLUUT VERBODEN: medische instructies, EHBO, advies over wat te doen.` },
+  senior: { id:'senior', label:'10–12+ jaar', icon:'⚡', primary:'#dc2626', light:'#fff1f2', quizOpts:4, fs:14,
+    p3sys:`Je bent een Nederlandse 112 centralist in een EDUCATIEVE SIMULATOR voor 10-12 jarigen. Gebruik het ECHTE protocol: 1."112, wie wilt u spreken: politie, brandweer of ambulance?" 2."Één moment, ik verbind u door naar de regionale [dienst]meldkamer." 3.Regionaal: locatie → telefoonnummer → situatie → max 2 sleutelvragen. 4.Sluit ALTIJD af met: "De [dienst] is onderweg. Blijf aan de lijn." en [KLAAR]. ABSOLUUT VERBODEN: medische instructies, EHBO, brandveiligheidsinstructies, advies over wat te doen.` },
+};
+
+const SVC = {
+  brandweer:{ name:"Brandweer", icon:"🚒", color:"#dc2626", light:"#fee2e2" },
+  ambulance:{ name:"Ambulance", icon:"🚑", color:"#ea580c", light:"#ffedd5" },
+  politie:  { name:"Politie",   icon:"🚔", color:"#1d4ed8", light:"#dbeafe" },
+};
+
+// ─── SPEECH ────────────────────────────────
+function useSpeech(modeId) {
+  const vRef = useRef(null);
+  const [voiceName, setVoiceName] = useState('');
+  useEffect(() => {
+    const pick = () => {
+      const all = window.speechSynthesis?.getVoices() || [];
+      if (!all.length) return;
+      const score = v => {
+        let s = 0;
+        if (v.lang === 'nl-NL') s += 10; else if (v.lang.startsWith('nl')) s += 5;
+        const n = v.name.toLowerCase();
+        if (n.includes('xander')) s += 40;
+        if (n.includes('saskia')) s += 38;
+        if (n.includes('wavenet')) s += 25;
+        if (n.includes('neural')||n.includes('enhanced')||n.includes('premium')) s += 20;
+        if (n.includes('google nl')||n.includes('google nederlands')) s += 18;
+        if (n.includes('google')) s += 8;
+        return s;
+      };
+      const nl = all.filter(v => v.lang.startsWith('nl'));
+      const pool = nl.length ? nl : all;
+      const best = pool.sort((a,b) => score(b)-score(a))[0];
+      vRef.current = best;
+      setVoiceName(best?.name || '');
+    };
+    pick();
+    window.speechSynthesis.onvoiceschanged = pick;
+  }, []);
+
+  const speak = useCallback((text, type='max', cb) => {
+    if (!text || !window.speechSynthesis) return;
+    const clean = text.replace(/\[KLAAR\]/g,'').replace(/\*[^*]+\*/g,'').replace(/112/g,'één één twee').trim();
+    window.speechSynthesis.cancel();
+    setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(clean);
+      u.lang = 'nl-NL';
+      if (vRef.current) u.voice = vRef.current;
+      if (type==='operator') { u.rate=modeId==='young'?0.74:modeId==='senior'?0.87:0.80; u.pitch=modeId==='young'?1.20:0.78; }
+      else if (type==='max') { u.rate=modeId==='young'?0.72:0.86; u.pitch=modeId==='young'?1.30:1.08; }
+      else { u.rate=0.83; u.pitch=1.0; }
+      u.volume=1;
+      if (cb) u.onend=cb;
+      window.speechSynthesis.speak(u);
+    }, 120);
+  }, [modeId]);
+
+  const stop = useCallback(() => window.speechSynthesis?.cancel(), []);
+  return { speak, stop, voiceName };
+}
+
+// ─── MAX SVG ───────────────────────────────
+const MaxChar = ({size=100}) => (
+  React.createElement('svg', {width:size, height:size, viewBox:"0 0 130 130"},
+    React.createElement('circle', {cx:65,cy:65,r:62,fill:"#1d4ed8",stroke:"#1e40af",strokeWidth:2.5}),
+    React.createElement('rect', {x:45,y:82,width:40,height:26,rx:6,fill:"#2563eb"}),
+    React.createElement('polygon', {points:"65,87 67.5,93 74,93 68.5,97 70.5,104 65,100 59.5,104 61.5,97 56,93 62.5,93",fill:"#fbbf24"}),
+    React.createElement('rect', {x:52,y:105,width:26,height:9,rx:3,fill:"white"}),
+    React.createElement('text', {x:65,y:112,textAnchor:"middle",fontSize:6,fontWeight:900,fill:"#1d4ed8",fontFamily:"system-ui"},"MAX"),
+    React.createElement('rect', {x:59,y:68,width:12,height:14,rx:4,fill:"#fde68a"}),
+    React.createElement('ellipse', {cx:65,cy:50,rx:24,ry:26,fill:"#fde68a"}),
+    React.createElement('ellipse', {cx:41,cy:50,rx:5,ry:7,fill:"#fde68a"}),
+    React.createElement('ellipse', {cx:89,cy:50,rx:5,ry:7,fill:"#fde68a"}),
+    React.createElement('ellipse', {cx:65,cy:27,rx:24,ry:11,fill:"#92400e"}),
+    React.createElement('rect', {x:41,y:27,width:48,height:10,fill:"#92400e"}),
+    React.createElement('path', {d:"M50 40 Q56 37.5 60 40",stroke:"#78350f",strokeWidth:2.2,fill:"none",strokeLinecap:"round"}),
+    React.createElement('path', {d:"M70 40 Q74 37.5 80 40",stroke:"#78350f",strokeWidth:2.2,fill:"none",strokeLinecap:"round"}),
+    React.createElement('ellipse', {cx:56,cy:48,rx:5,ry:5.5,fill:"white"}),
+    React.createElement('ellipse', {cx:74,cy:48,rx:5,ry:5.5,fill:"white"}),
+    React.createElement('circle', {cx:57,cy:49,r:3.2,fill:"#1d4ed8"}),
+    React.createElement('circle', {cx:75,cy:49,r:3.2,fill:"#1d4ed8"}),
+    React.createElement('circle', {cx:57.5,cy:49.5,r:1.6,fill:"#0f172a"}),
+    React.createElement('circle', {cx:75.5,cy:49.5,r:1.6,fill:"#0f172a"}),
+    React.createElement('circle', {cx:59,cy:47.5,r:.9,fill:"white"}),
+    React.createElement('circle', {cx:77,cy:47.5,r:.9,fill:"white"}),
+    React.createElement('ellipse', {cx:65,cy:55,rx:2.5,ry:2,fill:"#f9a8d4"}),
+    React.createElement('path', {d:"M56 61 Q65 68 74 61",stroke:"#92400e",strokeWidth:2.2,fill:"none",strokeLinecap:"round"}),
+    React.createElement('ellipse', {cx:49,cy:60,rx:5,ry:3.5,fill:"#fca5a5",opacity:.5}),
+    React.createElement('ellipse', {cx:81,cy:60,rx:5,ry:3.5,fill:"#fca5a5",opacity:.5}),
+    React.createElement('path', {d:"M41 47 Q41 22 65 22 Q89 22 89 47",stroke:"#1f2937",strokeWidth:4,fill:"none",strokeLinecap:"round"}),
+    React.createElement('rect', {x:36,y:44,width:11,height:15,rx:5.5,fill:"#374151"}),
+    React.createElement('rect', {x:83,y:44,width:11,height:15,rx:5.5,fill:"#374151"}),
+    React.createElement('path', {d:"M40 55 Q30 60 27 67",stroke:"#374151",strokeWidth:2.5,strokeLinecap:"round",fill:"none"}),
+    React.createElement('rect', {x:23,y:64,width:8,height:10,rx:4,fill:"#374151"}),
+    React.createElement('circle', {cx:27,cy:69,r:3,fill:"#10b981"})
+  )
+);
+
+// ─── DATA ──────────────────────────────────
+const SCENARIOS = {
+  brandweer:[
+    {id:"b1",title:"Brand in huis",icon:"🔥",req:true,
+      cards:[
+        {h:"Wanneer bel je de brandweer?",t:"Bel 112 voor de brandweer als er brand is, als je rook ziet of ruikt, of als iemand bekneld zit na een ongeluk."},
+        {h:"Wat zeg je als je belt?",t:"Vertel de centralist: waar de brand is, dat er brand is, en of er nog mensen in het pand zijn."},
+        {h:"Hoe verloopt het gesprek?",t:"Driebergen vraagt eerst welke dienst je nodig hebt. Daarna word je doorverbonden naar de regionale brandweermeldkamer."},
+      ],
+      quiz:[
+        {q:"Je ziet rook uit het huis van de buren. Wat doe je?",opts:["Niets doen","112 bellen — brandweer","Zelf gaan kijken","De politie bellen"],ans:1,ok:"Goed! Bij rook bel je altijd 112 en kies je de brandweer.",nok:"Bij rook bel je direct 112 en kies je de brandweer — niet zelf gaan kijken, dat is gevaarlijk."},
+        {q:"Wat is de allereerste vraag van de centralist?",opts:["Wat is uw naam?","Waar bent u?","Wie wilt u spreken?","Wat is er aan de hand?"],ans:2,ok:"Juist! Driebergen vraagt altijd eerst welke hulpdienst je nodig hebt.",nok:"Driebergen vraagt altijd als eerste welke hulpdienst — niet jouw naam of locatie."},
+        {q:"Wat is het allerbelangrijkste dat je doorgeeft?",opts:["Je leeftijd","Het exacte adres","Hoe groot de brand is","Hoe lang de brand duurt"],ans:1,ok:"Correct! Zonder adres weet de brandweer niet waar naartoe.",nok:"Het adres is het allerbelangrijkste. Zonder adres weet de brandweer niet waar naartoe."},
+        {q:"De centralist stelt vragen. Wat doe je?",opts:["Ophangen","Rustig alle vragen beantwoorden","Boos worden","Zelf blussen"],ans:1,ok:"Goed! De brandweer rijdt al terwijl de vragen worden gesteld.",nok:"Blijf rustig en beantwoord alle vragen. De brandweer rijdt al terwijl jij praat."},
+        {q:"Wanneer hang jij op bij een 112-gesprek?",opts:["Als ik dat wil","Als de brandweer er al is","Als de centralist zegt dat het klaar is","Na 1 minuut"],ans:2,ok:"Juist! Hang nooit zelf op.",nok:"Je hangt NOOIT zelf op. Wacht altijd tot de centralist aangeeft dat het klaar is."},
+      ]},
+    {id:"b2",title:"Gaslek",icon:"💨",req:false,
+      cards:[{h:"Hoe herken je een gaslek?",t:"Gas ruikt naar rotte eieren door een speciale stof. Ruik je dat? Dan kan er een gaslek zijn."},{h:"Welke dienst bel je?",t:"Bel 112 en kies de brandweer. Vertel het adres en dat je gaslucht ruikt."},{h:"Wat vraagt de centralist?",t:"Waar ben je, wat ruik je, en of er mensen in het pand zijn."}],
+      quiz:[
+        {q:"Je ruikt thuis sterk naar rotte eieren. Wat is dat?",opts:["Vuile sokken","Een gaslek","Iets verbrand","Een vuilniszak"],ans:1,ok:"Correct! Rotte eieren is de herkenningsgeur van gas.",nok:"De geur van rotte eieren bij gas is speciaal toegevoegd. Altijd 112 bellen!"},
+        {q:"Welke hulpdienst bel je bij een gaslek?",opts:["Ambulance","Politie","Brandweer","Niemand"],ans:2,ok:"Juist! Bij een gaslek bel je 112 en kies je de brandweer.",nok:"Bij een gaslek kies je altijd brandweer."},
+        {q:"Wat vertel je de centralist als eerste?",opts:["Hoe lang je de geur al ruikt","Het exacte adres","Jouw naam","Of ramen open staan"],ans:1,ok:"Het adres is altijd het allerbelangrijkste!",nok:"Het adres altijd als eerste! Zonder adres weet de brandweer niet waar naartoe."},
+        {q:"Mag je zelf zoeken waar het gas vandaan komt?",opts:["Ja","Nee, dat is gevaarlijk","Alleen met zaklamp","Ja, als je ramen opendoet"],ans:1,ok:"Correct! Ga nooit zelf zoeken.",nok:"Nooit zelf zoeken — gaslek opsporen is levensgevaarlijk."},
+        {q:"Wat zegt de centralist als hulp onderweg is?",opts:["Dag!","De brandweer is onderweg, blijf aan de lijn","U kunt ophangen","Bel terug"],ans:1,ok:"Juist!",nok:"De centralist zegt altijd 'De brandweer is onderweg, blijf aan de lijn'."},
+      ]},
+    {id:"b3",title:"Bekneld bij ongeluk",icon:"🚗",req:false,
+      cards:[{h:"Brandweer bij een ongeluk?",t:"Als iemand bekneld zit in een voertuig heeft de brandweer speciaal gereedschap."},{h:"Wat vertel je?",t:"Adres of km-paaltje, dat er een ongeluk is, en dat iemand bekneld zit."},{h:"Meerdere hulpdiensten",t:"Eén telefoontje naar 112 is genoeg. De centralist regelt de rest."}],
+      quiz:[
+        {q:"Na een ongeluk zit de bestuurder vast. Welke dienst?",opts:["Politie","Ambulance","Brandweer","Rijkswaterstaat"],ans:2,ok:"Juist! De brandweer heeft speciaal gereedschap.",nok:"De brandweer heeft het speciale gereedschap om mensen te bevrijden."},
+        {q:"Hoe geef je de locatie op de snelweg?",opts:["Ergens op de A1","A1 richting Amsterdam, paaltje 45.2","Vlakbij de stad","Op een grote weg"],ans:1,ok:"Correct! Zo specifiek mogelijk.",nok:"Snelwegnummer + richting + dichtstbijzijnd paaltje."},
+        {q:"Moet je apart bellen voor brandweer én ambulance?",opts:["Ja","Nee, de centralist regelt dat","Ja maar alleen als je tijd hebt","Nooit ambulance nodig"],ans:1,ok:"Goed! Eén keer 112.",nok:"Eén keer 112 bellen is genoeg."},
+        {q:"Wat is de eerste vraag van de centralist?",opts:["Hoeveel gewonden?","Is de auto total loss?","Wie wilt u spreken?","Rijdt u zelf?"],ans:2,ok:"Juist!",nok:"Driebergen vraagt ALTIJD eerst: 'Wie wilt u spreken?'"},
+        {q:"Er worden vragen gesteld. Wat doe je?",opts:["Ophangen","Rustig alle vragen beantwoorden","Schreeuwen","Zelf hulp verlenen"],ans:1,ok:"Correct!",nok:"Blijf altijd rustig. De hulp rijdt al."},
+      ]},
+    {id:"b4",title:"Keukenbrand",icon:"🍳",req:false,
+      cards:[{h:"Brand in de keuken",t:"Keukenbrand kan snel groot worden. Bel direct 112."},{h:"Wat vertel je?",t:"Het adres, dat er brand in de keuken is, en of er mensen in huis zijn."},{h:"Hoe verloopt het gesprek?",t:"Driebergen vraagt welke dienst. Na 'brandweer' verbinden ze door."}],
+      quiz:[
+        {q:"Er is brand in de keuken. Wat doe je als eerste?",opts:["Water gooien","112 bellen","Zelf blussen","Wachten"],ans:1,ok:"Juist! Bel 112.",nok:"Direct 112 bellen! Nooit zelf proberen te blussen."},
+        {q:"Welke informatie heeft de centralist het meest nodig?",opts:["Wat er brandde","Het exacte adres","Hoe de brand begon","Hoe groot de vlammen zijn"],ans:1,ok:"Het adres is altijd het allerbelangrijkste!",nok:"Het adres is altijd het eerste en belangrijkste."},
+        {q:"Waarom vraagt de centralist of er mensen in huis zijn?",opts:["Statistieken","Zodat de brandweer weet of ze mensen moeten redden","Niet belangrijk","Om te weten hoeveel auto's"],ans:1,ok:"Precies!",nok:"Of er mensen in het pand zijn is cruciaal voor de brandweer."},
+        {q:"Welke woorden betekenen dat hulp onderweg is?",opts:["Tot ziens!","De brandweer is onderweg, blijf aan de lijn","We kijken ernaar","Bel ons terug"],ans:1,ok:"Juist!",nok:"'De brandweer is onderweg, blijf aan de lijn' — die woorden."},
+        {q:"De centralist vraagt 'Wie wilt u spreken?' Wat zeg je?",opts:["112","Ik weet het niet","Brandweer","Snel!"],ans:2,ok:"Correct!",nok:"Zeg direct 'brandweer'. Rustig en duidelijk."},
+      ]},
+    {id:"b5",title:"Buitenbrand",icon:"🌲",req:false,
+      cards:[{h:"Buitenbrand melden",t:"Bel 112 als er brand is in een bos, veld, of als een voertuig buiten in brand staat."},{h:"Locatie bij buitenbrand",t:"Noem een herkenningspunt als je het adres niet weet."},{h:"Wat vraagt de centralist?",t:"Waar is de brand, hoe groot, zijn er mensen of gebouwen in de buurt?"}],
+      quiz:[
+        {q:"Je ziet brand in een bos. Wat doe je?",opts:["Foto's maken","112 — brandweer","Zelf blussen","Wachten"],ans:1,ok:"Juist! Bel 112.",nok:"Direct 112 bellen! Bosbrand verspreidt zich snel."},
+        {q:"Je weet het exacte adres niet. Wat doe je?",opts:["Ophangen","Een herkenningspunt noemen","Zeggen dat je het niet weet","Alleen het dorp noemen"],ans:1,ok:"Goed!",nok:"Noem een herkenningspunt. De centralist helpt je verder."},
+        {q:"Na welke vraag word je doorverbonden?",opts:["Na de locatievraag","Na de vraag welke hulpdienst","Na de brandgrootte vraag","Na de veiligheidsvraag"],ans:1,ok:"Juist!",nok:"Driebergen verbindt door NA de vraag welke hulpdienst."},
+        {q:"Waarom vraagt de centralist of er gebouwen in de buurt zijn?",opts:["Hoeveel voertuigen","Om de urgentie te bepalen","Standaardvraag","Statistieken"],ans:1,ok:"Correct!",nok:"Dit bepaalt de urgentie en het aantal voertuigen."},
+        {q:"Wanneer hang je op?",opts:["Als de brandweer er is","Als je de brand niet meer ziet","Als de centralist zegt dat het klaar is","Na 2 minuten"],ans:2,ok:"Juist!",nok:"Nooit zelf ophangen. Wacht tot de centralist het gesprek afsluit."},
+      ]},
+  ],
+  ambulance:[
+    {id:"a1",title:"Iemand bewusteloos",icon:"😵",req:true,
+      cards:[{h:"Wanneer bel je de ambulance?",t:"Bel 112 als iemand bewusteloos is of niet reageert als je hem aanspreekt."},{h:"Wat zeg je?",t:"Vertel het adres, dat iemand bewusteloos is. Beantwoord alle vragen rustig."},{h:"Hoe verloopt het gesprek?",t:"Driebergen vraagt welke dienst. Daarna verbinden ze door naar de ambulancemeldkamer."}],
+      quiz:[
+        {q:"Je vindt iemand op de grond die niet reageert. Wat doe je?",opts:["Wachten","112 — ambulance","Zelf wakker maken","Buren roepen"],ans:1,ok:"Juist! Als iemand niet reageert, bel je direct 112.",nok:"Direct 112 bellen! Iemand die niet reageert heeft onmiddellijk professionele hulp nodig."},
+        {q:"Wat vraagt de ambulancecentralist als eerste?",opts:["Hoe oud is de persoon?","Wat is de locatie?","Hoe lang bewusteloos?","Kent u de persoon?"],ans:1,ok:"Juist! Locatie is altijd de eerste vraag.",nok:"Locatie is altijd de eerste vraag — de ambulance moet weten waar naartoe."},
+        {q:"Is het normaal dat de centralist vragen stelt terwijl de ambulance al rijdt?",opts:["Nee","Ja, de ambulance rijdt zodra het adres bekend is","Alleen bij ernstige gevallen","Nee, ze wachten altijd"],ans:1,ok:"Correct!",nok:"Ja, de ambulance vertrekt zodra het adres doorgegeven is."},
+        {q:"Hoe eindigt het gesprek?",opts:["Je hangt op wanneer je wil","De centralist zegt dat de ambulance onderweg is","Als de ambulance arriveert","Na 3 minuten"],ans:1,ok:"Juist! Hang nooit zelf op.",nok:"Wacht altijd tot de centralist zegt dat het klaar is."},
+        {q:"Wat is de allereerste vraag van de centralist in Driebergen?",opts:["Wat is er aan de hand?","Waar bent u?","Wie wilt u spreken?","Hoe oud is de persoon?"],ans:2,ok:"Correct!",nok:"Driebergen vraagt ALTIJD als eerste: 'Wie wilt u spreken?'"},
+      ]},
+    {id:"a2",title:"Iemand wordt onwel",icon:"💔",req:false,
+      cards:[{h:"Wanneer is het een noodgeval?",t:"Heftige pijn op de borst, moeilijk ademen, plotseling neerkomen — dit zijn noodgevallen."},{h:"Wat vertel je?",t:"Vertel het adres en welke klachten de persoon heeft."},{h:"De ambulance rijdt al",t:"Na het adres rijdt de ambulance al."}],
+      quiz:[
+        {q:"Iemand heeft hevige pijn op de borst. Wat doe je?",opts:["Afwachten","112 — ambulance","Water geven","Familie bellen"],ans:1,ok:"Juist! Bel direct 112.",nok:"Dit zijn ernstige alarmsignalen. Direct 112 bellen."},
+        {q:"Welke informatie vraagt de centralist als eerste?",opts:["Hoe oud de persoon is","Wat de locatie is","Hoe lang de klachten al duren","Of hij medicijnen gebruikt"],ans:1,ok:"Correct! Locatie is altijd de eerste vraag.",nok:"Locatie altijd als eerste."},
+        {q:"Waarom stelt de centralist vragen als de ambulance al rijdt?",opts:["Tijdvulling","Om het ambulanceteam te informeren","Om zeker te zijn dat het noodgeval is","Geen reden"],ans:1,ok:"Correct!",nok:"Jouw antwoorden worden live doorgegeven aan het team."},
+        {q:"Wanneer beëindigt de centralist het gesprek?",opts:["Als de ambulance arriveert","Als de centralist aangeeft dat het klaar is","Na 5 minuten","Als de persoon wakker wordt"],ans:1,ok:"Juist!",nok:"Nooit zelf ophangen."},
+        {q:"Hoe beschrijf je de klachten?",opts:["Ik weet het niet","Zo duidelijk mogelijk: wat je ziet","Alleen dat het erg is","Dat hoef je niet te vertellen"],ans:1,ok:"Goed!",nok:"Zo concreet mogelijk beschrijven wat je ziet."},
+      ]},
+    {id:"a3",title:"Ernstig ongeluk",icon:"🚑",req:false,
+      cards:[{h:"Ambulance bij een ongeluk",t:"Bel de ambulance als iemand gewond is na een ongeluk."},{h:"Wat vertel je?",t:"Adres, hoeveel mensen gewond zijn."},{h:"Meerdere hulpdiensten",t:"Eén 112-gesprek regelt alles."}],
+      quiz:[
+        {q:"Twee mensen liggen op de grond en reageren niet. Wat doe je?",opts:["Kijken of ze opstaan","112 — ambulance","Ze verplaatsen","Voorbijgangers vragen"],ans:1,ok:"Juist!",nok:"Direct 112! Mensen niet verplaatsen."},
+        {q:"De centralist vraagt hoeveel gewonden er zijn. Waarom?",opts:["Statistieken","Zodat ze weten hoeveel ambulances nodig zijn","Onnodige vraag","Ernst inschatten"],ans:1,ok:"Correct!",nok:"Het aantal gewonden bepaalt hoeveel ambulances komen."},
+        {q:"Moet je apart bellen voor politie én ambulance?",opts:["Ja","Nee, één 112-gesprek is genoeg","Ja maar alleen als nodig","Nee maar politie apart"],ans:1,ok:"Goed!",nok:"Eén keer 112 is genoeg."},
+        {q:"Wat vraagt de ambulancecentralist als allereerste?",opts:["Hoe de gewonden eraan toe zijn","Wat de locatie is","Hoe lang geleden het ongeluk was","Of er getuigen zijn"],ans:1,ok:"Juist!",nok:"Locatie eerste."},
+        {q:"Na welke woorden weet je dat hulp onderweg is?",opts:["We zien het wel","De ambulance is onderweg, blijf aan de lijn","Bel terug","Succes"],ans:1,ok:"Correct!",nok:"'De ambulance is onderweg, blijf aan de lijn.'"},
+      ]},
+    {id:"a4",title:"Verdrinking",icon:"💧",req:false,
+      cards:[{h:"Wanneer bel je 112 bij verdrinking?",t:"Bel 112 als iemand in het water is gevallen en het niet zelf kan verlaten."},{h:"Wat vertel je?",t:"Exact waar het is, of de persoon nog in het water is."},{h:"Welke hulpdienst?",t:"Vraag de ambulance. Als er reddingsdiensten nodig zijn, regelt de centralist dat."}],
+      quiz:[
+        {q:"Iemand valt in een kanaal en komt niet boven. Wat doe je?",opts:["Zelf in water springen","112 — ambulance","Wachten","Omstanders roepen"],ans:1,ok:"Juist! Spring niet zelf in het water.",nok:"Direct 112! Zelf in het water springen is gevaarlijk."},
+        {q:"Waarom vraagt de centralist of de persoon nog in het water is?",opts:["Om urgentie en juiste hulp te bepalen","Onnodige vraag","Statistieken","Om te weten of het een ongeluk was"],ans:0,ok:"Juist!",nok:"Dit is cruciaal voor de urgentie."},
+        {q:"Hoe beschrijf je de locatie bij een kanaal?",opts:["Ergens bij het water","Naam kanaal en dichtstbijzijnde straat","Ik weet het niet","Het wateroppervlak"],ans:1,ok:"Correct!",nok:"Zo specifiek mogelijk: naam kanaal en dichtstbijzijnde straat."},
+        {q:"Welke hulpdienst vraag je bij verdrinking?",opts:["Politie","Ambulance","Brandweer","Rijkswaterstaat"],ans:1,ok:"Juist!",nok:"Ambulance! De centralist regelt eventuele reddingsdiensten."},
+        {q:"Wat zegt de centralist als hulp onderweg is?",opts:["Goed gedaan!","De ambulance is onderweg, blijf aan de lijn","U kunt ophangen","Bel terug"],ans:1,ok:"Juist!",nok:"'De ambulance is onderweg, blijf aan de lijn.'"},
+      ]},
+    {id:"a5",title:"Kind verslikt zich",icon:"🧒",req:false,
+      cards:[{h:"Wanneer bel je 112 bij verslikking?",t:"Bel 112 als iemand niet meer kan ademen, blauw wordt, of bewusteloos raakt."},{h:"Wat vertel je?",t:"Adres, dat iemand niet kan ademen, en de leeftijd."},{h:"Snel handelen",t:"Bel 112 direct als iemand niet meer kan ademen."}],
+      quiz:[
+        {q:"Een kind wordt blauw en kan niet meer ademen. Wat doe je?",opts:["Wachten","112 — ambulance","Water geven","Op zijn rug kloppen en wachten"],ans:1,ok:"Juist! Bel direct 112.",nok:"Direct 112! Als iemand niet meer kan ademen is elke seconde kostbaar."},
+        {q:"Wat vraagt de centralist als eerste?",opts:["Hoe oud het kind is","Wat het adres is","Hoe lang al niet ademt","Wat ingeslikt is"],ans:1,ok:"Het adres is altijd de eerste vraag.",nok:"Het adres altijd als eerste."},
+        {q:"Waarom vraagt de centralist de leeftijd?",opts:["Statistieken","Bepaalt welk team het best kan komen","Onnodige vraag","Dossier"],ans:1,ok:"Correct!",nok:"De leeftijd bepaalt de beste aanpak voor het team."},
+        {q:"Wanneer beëindigt de centralist het gesprek?",opts:["Als het kind weer ademt","Als de centralist zegt dat het klaar is","Na 2 minuten","Als je wil"],ans:1,ok:"Juist!",nok:"Nooit zelf ophangen."},
+        {q:"Welke zin hoor je als de ambulance onderweg is?",opts:["We hopen dat het goed gaat","De ambulance is onderweg, blijf aan de lijn","Succes!","We sturen iemand"],ans:1,ok:"Correct!",nok:"'De ambulance is onderweg, blijf aan de lijn.'"},
+      ]},
+  ],
+  politie:[
+    {id:"p1",title:"Geweld / vechtpartij",icon:"👊",req:true,
+      cards:[{h:"Wanneer bel je 112 bij geweld?",t:"Bel 112 als je getuige bent van geweld of als jijzelf in gevaar bent."},{h:"Jouw veiligheid eerst",t:"Zorg dat je zelf veilig bent voordat je belt."},{h:"Wat vertel je?",t:"Adres, dat er geweld is, hoeveel personen, en een beschrijving."}],
+      quiz:[
+        {q:"Je ziet iemand aangevallen worden. Wat doe je?",opts:["Zelf ingrijpen","112 — politie vanuit een veilige plek","Schreeuwen","Wachten"],ans:1,ok:"Juist! Vanuit een veilige plek.",nok:"Zelf ingrijpen is gevaarlijk. Bel 112 vanuit een veilige plek."},
+        {q:"Wat vraagt de politiecentralist als eerste?",opts:["Wie de dader is","Wat de locatie is","Hoeveel personen","Of je eerder belde"],ans:1,ok:"Juist!",nok:"Locatie altijd als eerste."},
+        {q:"De centralist vraagt een beschrijving. Wat vertel je?",opts:["Alleen haarkleur","Kleding, haardracht, lengte en richting","Alleen de naam","Onnodige vraag"],ans:1,ok:"Correct!",nok:"Kleding, lengte, haarkleur en richting."},
+        {q:"Je bent bang. Hoe praat je met de centralist?",opts:["Alles snel door elkaar","Zo rustig en duidelijk mogelijk","Alleen fluisteren","Niets zeggen"],ans:1,ok:"Juist!",nok:"Rustig en duidelijk spreken helpt het meest."},
+        {q:"Wat zegt de centralist als alle info duidelijk is?",opts:["Dag!","De politie is onderweg, blijf aan de lijn","Bel terug","U kunt ophangen"],ans:1,ok:"Juist!",nok:"'De politie is onderweg, blijf aan de lijn.'"},
+      ]},
+    {id:"p2",title:"Inbraak",icon:"🔓",req:false,
+      cards:[{h:"Wanneer bel je 112 bij inbraak?",t:"Bel 112 als een inbraak op dit moment bezig is. Bel 0900-8844 als die al voorbij is."},{h:"Wat vertel je?",t:"Adres, dat er inbraak is, en of de inbrekers er nog zijn."},{h:"Jouw veiligheid",t:"Ga nooit zelf confronteren. Bel vanuit een veilige plek."}],
+      quiz:[
+        {q:"Je hoort 's nachts geluiden beneden. Wat doe je?",opts:["Zelf gaan kijken","112 — politie vanuit een veilige plek","Schreeuwen","Wachten"],ans:1,ok:"Juist!",nok:"Nooit zelf gaan kijken — bel 112 vanuit een veilige plek."},
+        {q:"Gisteren was er ingebroken bij de buren. Wat bel je?",opts:["112","0900-8844","Niets","Buurtpolitie"],ans:1,ok:"Correct!",nok:"Als het al voorbij is bel je 0900-8844."},
+        {q:"Wat vraagt de centralist als eerste?",opts:["Hoeveel schade","Wat de locatie is","Hoe de inbreker eruitziet","Wanneer het begon"],ans:1,ok:"Juist!",nok:"Locatie altijd als eerste."},
+        {q:"Waarom vraagt de centralist of de inbrekers er nog zijn?",opts:["Statistieken","Om de urgentie te bepalen","Onnodige vraag","Om jou gerust te stellen"],ans:1,ok:"Correct!",nok:"Of ze er nog zijn bepaalt de urgentie."},
+        {q:"Hoe sluit het gesprek af?",opts:["Succes!","De politie is onderweg, blijf aan de lijn","We sturen iemand zodra we kunnen","Bel ons terug"],ans:1,ok:"Juist!",nok:"'De politie is onderweg, blijf aan de lijn.'"},
+      ]},
+    {id:"p3",title:"Vermist kind",icon:"👧",req:false,
+      cards:[{h:"Wanneer bel je 112 bij vermissing?",t:"Bel 112 als een jong kind plotseling weg is op een gevaarlijke plek."},{h:"Wat vertel je?",t:"Waar het kind voor het laatste gezien is, een beschrijving, en de naam."},{h:"Hoe verloopt het gesprek?",t:"De politiecentralist vraagt locatie, beschrijving, en hoe lang het kind al vermist is."}],
+      quiz:[
+        {q:"Op het strand is een kind van 3 plotseling weg. Wat doe je?",opts:["Eerst zelf zoeken","Direct 112 — politie","Strandgangers inschakelen","Naar de strandwacht"],ans:1,ok:"Juist! Elke seconde telt.",nok:"Direct 112! Bij een peuter vlakbij water telt elke seconde."},
+        {q:"Wat vraagt de centralist als eerste?",opts:["Naam van het kind","Locatie waar het kind voor het laatste gezien is","Leeftijd","Hoe het kind eruitziet"],ans:1,ok:"Locatie eerste.",nok:"Locatie altijd als eerste."},
+        {q:"De centralist vraagt een beschrijving. Wat noem je?",opts:["Alleen de naam","Kleding, haarkleur, lengte en leeftijd","Alleen leeftijd","Alleen kledingkleur"],ans:1,ok:"Correct!",nok:"Zo volledig mogelijk: kleding, haarkleur, lengte, leeftijd."},
+        {q:"Hoe lang is het kind al vermist? Wat is een goed antwoord?",opts:["Lang","Zo precies mogelijk: tijdstip","Een paar minuten","Dat weet ik niet"],ans:1,ok:"Juist!",nok:"Noem het exacte tijdstip wanneer je het kind voor het laatste zag."},
+        {q:"Hoe eindigt het gesprek?",opts:["We doen ons best","De politie is onderweg, blijf aan de lijn","U kunt ophangen","Succes"],ans:1,ok:"Juist!",nok:"'De politie is onderweg, blijf aan de lijn.'"},
+      ]},
+    {id:"p4",title:"Bedreiging",icon:"😨",req:true,
+      cards:[{h:"Wanneer bel je 112 bij bedreiging?",t:"Bel 112 als jij of iemand anders direct gevaarlijk wordt bedreigd."},{h:"Jouw veiligheid eerste",t:"Kom eerst in veiligheid voor je belt."},{h:"Wat vertel je?",t:"Locatie, dat je wordt bedreigd, en door wie."}],
+      quiz:[
+        {q:"Iemand bedreigt jou. Wat doe je als eerste?",opts:["Direct 112 terwijl diegene naast je staat","Naar een veilige plek en dan 112","Schreeuwen","Onderhandelen"],ans:1,ok:"Juist! Veiligheid eerst.",nok:"Eigen veiligheid altijd eerst. Ga naar een veilige plek en bel dan pas 112."},
+        {q:"De centralist vraagt of de persoon een wapen heeft. Je weet het niet. Wat zeg je?",opts:["Ja","Nee","Ik weet het niet zeker","Die vraag beantwoord ik niet"],ans:2,ok:"Correct! Wees eerlijk.",nok:"Altijd eerlijk zijn. Zeg precies wat je hebt gezien."},
+        {q:"Wat vraagt de centralist als allereerste?",opts:["Hoe de dader eruitziet","Wat de locatie is","Of je gewond bent","Hoe lang al"],ans:1,ok:"Juist!",nok:"Locatie altijd als eerste."},
+        {q:"De centralist vraagt een beschrijving. Wat is nuttig?",opts:["Alleen de naam","Kleding, lengte, haarkleur en richting","Alleen man of vrouw","Dat je bang bent"],ans:1,ok:"Correct!",nok:"Kleding, lengte, haarkleur en richting."},
+        {q:"Hoe eindigt het gesprek?",opts:["Je hangt op als je veilig bent","De centralist zegt dat de politie onderweg is","Na 3 minuten","Als de politie bij je is"],ans:1,ok:"Juist!",nok:"Wacht altijd tot de centralist aangeeft dat het klaar is."},
+      ]},
+    {id:"p5",title:"Verkeersongeval",icon:"💥",req:false,
+      cards:[{h:"Politie bij verkeersongeval",t:"Bel 112 bij een ongeluk met gewonden of als iemand doorrijdt."},{h:"Locatie goed doorgeven",t:"Op snelweg: nummer + richting + dichtstbijzijnd paaltje."},{h:"Meerdere diensten",t:"Eén 112-gesprek regelt alles."}],
+      quiz:[
+        {q:"Ernstig ongeluk op de snelweg. Wat doe je?",opts:["Uitstappen","112","Langzaam rijden en kijken","ANWB bellen"],ans:1,ok:"Juist! Bel direct 112.",nok:"Direct 112!"},
+        {q:"Hoe geef je de locatie op een snelweg?",opts:["Ergens op de A2","A2 richting Utrecht, paaltje 72.4","Vlakbij een stad","Op een snelweg"],ans:1,ok:"Correct!",nok:"Snelwegnummer, richting én het dichtstbijzijnde paaltje."},
+        {q:"Waarom vraagt de centralist of er gewonden zijn?",opts:["Statistieken","Om te bepalen of er ook een ambulance nodig is","Onnodige vraag","Om te weten of ze snel rijden"],ans:1,ok:"Juist!",nok:"Dit bepaalt of er naast politie ook een ambulance komt."},
+        {q:"Moet je apart bellen voor politie én ambulance?",opts:["Ja","Nee, één 112-gesprek","Ja maar alleen voor ambulance","Nee, alleen op snelweg"],ans:1,ok:"Correct!",nok:"Eén keer 112 is altijd genoeg."},
+        {q:"Hoe weet je dat hulp onderweg is?",opts:["U kunt nu ophangen","De politie is onderweg, blijf aan de lijn","We sturen iemand","Goed gedaan"],ans:1,ok:"Juist!",nok:"'De politie is onderweg, blijf aan de lijn.'"},
+      ]},
+  ],
+};
+
+const RETRY_MSG = "Ik heb dat niet helemaal begrepen. Blijf rustig, haal diep adem en luister goed naar mijn vraag.";
+
+const P2 = {
+  standard:{
+    brandweer:{title:"Brand in huis 🔥",closing:"De brandweer is onderweg. Blijf aan de lijn.",info:"In een echt gesprek blijft de centralist aan de lijn. In deze simulator stoppen we hier.",
+      steps:[
+        {who:"driebergen",txt:"112, wie wilt u spreken: politie, brandweer of ambulance?",opts:["Brandweer!","Ik weet het niet","Ambulance","Politie"],ans:0,ok:"Goed! Je noemt direct de juiste dienst."},
+        {who:"regionaal",pre:"Je wordt doorverbonden naar de regionale brandweermeldkamer.",txt:"Brandweermeldkamer, wat is de locatie van de brand?",opts:["Er is brand!","Kerkstraat 14 in Amsterdam","Ergens in de stad","Er is veel rook"],ans:1,ok:"Uitstekend! Een exact adres is het allerbelangrijkste."},
+        {who:"regionaal",txt:"Heeft u een telefoonnummer waarop wij u kunnen bereiken?",opts:["Ja, ik geef mijn telefoonnummer op","Nee, dat zeg ik niet","Waarom heeft u dat nodig?","Ik hang nu op"],ans:0,ok:"Goed! Als de verbinding wegvalt kan de meldkamer u terugbellen."},
+        {who:"regionaal",txt:"Wat is er precies aan de hand?",opts:["Er is brand in mijn huis, in de woonkamer","Het is heel erg!","Kom snel!","Ik weet het niet"],ans:0,ok:"Goed! Je beschrijft rustig en duidelijk wat er aan de hand is."},
+        {who:"regionaal",txt:"Zijn er nog mensen in het pand?",opts:["Nee, iedereen is al buiten","Dat gaat u niets aan","Ik hang op","Geen idee"],ans:0,ok:"Uitstekend! Of er nog mensen in het pand zijn is cruciaal."},
+      ]},
+    ambulance:{title:"Iemand bewusteloos 😵",closing:"De ambulance is onderweg. Blijf aan de lijn.",info:"In een echt gesprek blijft de centralist aan de lijn. In deze simulator stoppen we hier.",
+      steps:[
+        {who:"driebergen",txt:"112, wie wilt u spreken: politie, brandweer of ambulance?",opts:["Ambulance!","Politie","Brandweer","Help!"],ans:0,ok:"Goed! Je noemt direct de juiste dienst."},
+        {who:"regionaal",pre:"Je wordt doorverbonden naar de regionale ambulancemeldkamer.",txt:"Ambulancemeldkamer, wat is de locatie?",opts:["Er ligt iemand op de grond!","Parkstraat 8 in Utrecht","Ergens in de buurt","Het is erg!"],ans:1,ok:"Uitstekend! Zonder exact adres kan de ambulance niet rijden."},
+        {who:"regionaal",txt:"Heeft u een telefoonnummer waarop wij u kunnen bereiken?",opts:["Ja, ik geef mijn telefoonnummer op","Nee, dat wil ik niet","Waarom vraagt u dat?","Ik hang nu op"],ans:0,ok:"Goed! Zo kan de meldkamer je terugbellen als de verbinding wegvalt."},
+        {who:"regionaal",txt:"Wat is er precies aan de hand?",opts:["Er ligt een persoon bewusteloos op de grond, hij reageert niet","Er is iemand ziek","Help, snel!","Ik weet het niet"],ans:0,ok:"Goed! Je beschrijft kalm en duidelijk wat je ziet."},
+        {who:"regionaal",txt:"Bent u in de buurt van de persoon en blijft u bij hem tot de ambulance er is?",opts:["Ja, ik blijf bij hem en ik hang niet op","Nee, ik ga weg","Ik hang nu op","Dat weet ik niet"],ans:0,ok:"Perfect! Blijven bij de persoon en aan de lijn blijven zijn het belangrijkste."},
+      ]},
+    politie:{title:"Geweld / vechtpartij 👊",closing:"De politie is onderweg. Blijf aan de lijn.",info:"In een echt gesprek blijft de centralist aan de lijn. In deze simulator stoppen we hier.",
+      steps:[
+        {who:"driebergen",txt:"112, wie wilt u spreken: politie, brandweer of ambulance?",opts:["Politie!","Ambulance","Brandweer","Help!"],ans:0,ok:"Goed! Je noemt direct de juiste dienst."},
+        {who:"regionaal",pre:"Je wordt doorverbonden naar de regionale politiemeldkamer.",txt:"Politiemeldkamer, wat is de locatie?",opts:["Er is een vechtpartij!","Hoofdstraat 23 in Rotterdam","Ergens in de stad","Ik weet het niet"],ans:1,ok:"Uitstekend! Locatie eerste."},
+        {who:"regionaal",txt:"Heeft u een telefoonnummer waarop wij u kunnen bereiken?",opts:["Ja, ik geef mijn telefoonnummer op","Nee, dat zeg ik niet","Waarom?","Ik hang op"],ans:0,ok:"Goed!"},
+        {who:"regionaal",txt:"Wat is er precies aan de hand?",opts:["Er is een vechtpartij op straat, twee mensen vechten","Er is iets ergs","Kom snel!","Het is gevaarlijk"],ans:0,ok:"Goed! Je beschrijft rustig en duidelijk wat je ziet."},
+        {who:"regionaal",txt:"Bent u zelf op een veilige plek?",opts:["Ja, ik sta op veilige afstand en hang niet op","Nee, ik sta er vlakbij","Ik weet het niet","Ik hang nu op"],ans:0,ok:"Uitstekend! Jouw eigen veiligheid is het allerbelangrijkste."},
+      ]},
+  },
+  young:{
+    brandweer:{title:"Brand in huis 🔥",closing:"De brandweer komt eraan! Goed gedaan!",info:"Super goed gedaan! In het echt blijft de medewerker nog even aan de lijn.",
+      steps:[
+        {who:"driebergen",txt:"Hoi! Dit is één één twee. Wil je de brandweer?",opts:["Ja! Brandweer!","Nee"],ans:0,ok:"Super! Je vroeg de brandweer!"},
+        {who:"regionaal",pre:"Je word doorverbonden!",txt:"Brandweer! Waar is de brand?",opts:["Thuis! Kerkstraat 14","Ik weet het niet"],ans:0,ok:"Goed zo! Je vertelde waar de brand is!"},
+        {who:"regionaal",txt:"Zijn alle mensen buiten?",opts:["Ja, iedereen is buiten!","Nee"],ans:0,ok:"Heel goed! Dat is precies wat ze willen weten!"},
+      ]},
+    ambulance:{title:"Iemand is ziek 😵",closing:"De ambulance komt eraan! Heel goed gedaan!",info:"Super goed gedaan! In het echt blijft de medewerker nog even aan de lijn.",
+      steps:[
+        {who:"driebergen",txt:"Hoi! Dit is één één twee. Wil je de ambulance?",opts:["Ja! Ambulance!","Nee"],ans:0,ok:"Super goed!"},
+        {who:"regionaal",pre:"Je word doorverbonden!",txt:"Ambulance! Waar woon je?",opts:["Parkstraat 8!","Ik weet het niet"],ans:0,ok:"Goed zo! Je vertelde het adres!"},
+        {who:"regionaal",txt:"Blijf jij bij de zieke persoon?",opts:["Ja, ik blijf erbij!","Nee"],ans:0,ok:"Heel goed! Dat is heel dapper!"},
+      ]},
+    politie:{title:"Er is gevaar 👊",closing:"De politie komt eraan! Heel goed gedaan!",info:"Super goed gedaan! In het echt blijft de medewerker nog even aan de lijn.",
+      steps:[
+        {who:"driebergen",txt:"Hoi! Dit is één één twee. Wil je de politie?",opts:["Ja! Politie!","Nee"],ans:0,ok:"Super! Je vroeg de politie!"},
+        {who:"regionaal",pre:"Je word doorverbonden!",txt:"Politie! Waar ben je?",opts:["Hoofdstraat 23!","Ik weet het niet"],ans:0,ok:"Goed zo! Je vertelde waar je bent!"},
+        {who:"regionaal",txt:"Ben jij op een veilige plek?",opts:["Ja, ik ben veilig!","Nee"],ans:0,ok:"Heel goed! Jouw veiligheid is het allerbelangrijkste!"},
+      ]},
+  },
+};
+
+// ─── APP ───────────────────────────────────
+function App() {
+  const [scr, setScr] = useState("disclaimer");
+  const [confirmed, setConfirmed] = useState(false);
+  const [mode, setMode] = useState(null);
+  const [muted, setMuted] = useState(false);
+  const [svc, setSvc] = useState("brandweer");
+  const [scenIdx, setScenIdx] = useState(0);
+  const [cardIdx, setCardIdx] = useState(0);
+  const [qi, setQi] = useState(0);
+  const [qSel, setQSel] = useState(null);
+  const [qScore, setQScore] = useState(0);
+  const [p2step, setP2step] = useState(0);
+  const [p2sel, setP2sel] = useState(null);
+  const [p2score, setP2score] = useState(0);
+  const [p2done, setP2done] = useState(false);
+  const [p2retry, setP2retry] = useState(false);
+  const [p2stepFailed, setP2stepFailed] = useState(false);
+  const [p3confirmed, setP3confirmed] = useState(false);
+  const [p3msgs, setP3msgs] = useState([]);
+  const [p3inp, setP3inp] = useState("");
+  const [p3busy, setP3busy] = useState(false);
+  const [p3end, setP3end] = useState(false);
+  const [progress, setProgress] = useState({});
+  const [unlocks, setUnlocks] = useState({p2:{brandweer:false,ambulance:false,politie:false},p3:{brandweer:false,ambulance:false,politie:false}});
+  const msgsRef = useRef(null);
+  const { speak: rawSpeak, stop, voiceName } = useSpeech(mode||'mid');
+
+  const speak = useCallback((text, type, cb) => {
+    if (muted) { if(cb) setTimeout(cb,0); return; }
+    rawSpeak(text, type, cb);
+  }, [muted, rawSpeak]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r1 = await window.storage?.get("112sim_prog"); if(r1) setProgress(JSON.parse(r1.value));
+        const r2 = await window.storage?.get("112sim_unl");  if(r2) setUnlocks(JSON.parse(r2.value));
+        const r3 = await window.storage?.get("112sim_mode"); if(r3) setMode(r3.value);
+      } catch{}
+    })();
+  }, []);
+
+  const saveProg = async (p,u,m) => {
+    try {
+      if(p) await window.storage?.set("112sim_prog", JSON.stringify(p));
+      if(u) await window.storage?.set("112sim_unl", JSON.stringify(u));
+      if(m) await window.storage?.set("112sim_mode", m);
+    } catch{}
+  };
+
+  useEffect(() => { if(msgsRef.current) msgsRef.current.scrollTop = msgsRef.current.scrollHeight; }, [p3msgs]);
+
+  useEffect(() => {
+    if (scr==='p1learn' && mode) {
+      const sc = SCENARIOS[svc][scenIdx];
+      const t = setTimeout(() => speak(sc.cards[cardIdx].h+'. '+sc.cards[cardIdx].t,'max'), 500);
+      return () => clearTimeout(t);
+    }
+  }, [scr, cardIdx, scenIdx, svc, mode]);
+
+  useEffect(() => {
+    if (scr==='p1quiz' && mode) {
+      const q = SCENARIOS[svc][scenIdx].quiz[qi];
+      const t = setTimeout(() => speak(q.q,'max'), 500);
+      return () => clearTimeout(t);
+    }
+  }, [scr, qi, scenIdx, svc, mode]);
+
+  useEffect(() => {
+    if (scr==='p2sim' && !p2done && mode) {
+      const script = mode==='young' ? P2.young[svc] : P2.standard[svc];
+      const step = script.steps[p2step];
+      const t = setTimeout(() => speak(step.txt,'operator'), step.pre?1400:400);
+      return () => clearTimeout(t);
+    }
+  }, [scr, p2step, p2done, svc, mode]);
+
+  useEffect(() => {
+    if (p3msgs.length > 0) {
+      const last = p3msgs[p3msgs.length-1];
+      if (last.r==='assistant') {
+        const t = setTimeout(() => speak(last.t,'operator'), 200);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [p3msgs]);
+
+  const go = (s, opts={}) => {
+    stop();
+    if(opts.svc!==undefined) setSvc(opts.svc);
+    if(opts.scenIdx!==undefined) setScenIdx(opts.scenIdx);
+    setCardIdx(0);setQi(0);setQSel(null);setQScore(0);
+    setP2step(0);setP2sel(null);setP2score(0);setP2done(false);setP2retry(false);setP2stepFailed(false);
+    setP3msgs([]);setP3inp("");setP3busy(false);setP3end(false);setP3confirmed(false);
+    setScr(s);
+  };
+
+  const M = MODES[mode]||MODES.mid;
+  const V = SVC[svc];
+  const W = {maxWidth:480,margin:"0 auto",fontFamily:"system-ui,sans-serif",minHeight:"100vh",background:"#f8fafc",paddingBottom:40};
+  const PAD = {padding:"20px 16px"};
+
+  const Btn = ({color, label, onClick, disabled, style={}}) => (
+    React.createElement('button', {onClick, style:{background:disabled?"#9ca3af":(color||M.primary),color:"#fff",border:"none",borderRadius:14,padding:"15px 18px",fontSize:M.fs,fontWeight:700,cursor:disabled?"not-allowed":"pointer",width:"100%",marginBottom:10,display:"block",opacity:disabled?0.6:1,...style}}, label)
+  );
+
+  const Card = ({children, style={}}) => (
+    React.createElement('div', {style:{background:"#fff",borderRadius:16,padding:"20px",marginBottom:12,boxShadow:"0 1px 6px rgba(0,0,0,.08)",...style}}, children)
+  );
+
+  const LB = () => React.createElement('div', {style:{background:"#0f172a",color:"#e2e8f0",padding:"8px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,fontWeight:700,position:"sticky",top:0,zIndex:99,gap:4,flexWrap:"wrap"}},
+    React.createElement('span', null, "⚠️ SIMULATOR — GEEN ECHTE HULPDIENST"),
+    React.createElement('div', {style:{display:"flex",gap:8,alignItems:"center"}},
+      React.createElement('span', {style:{color:"#fbbf24"}}, "Echte nood? Bel 112"),
+      React.createElement('button', {onClick:()=>setMuted(m=>!m), style:{background:"none",border:"1px solid #4b5563",borderRadius:6,color:"#9ca3af",cursor:"pointer",fontSize:11,padding:"2px 7px"}}, muted?"🔇":"🔊")
+    )
+  );
+
+  // DISCLAIMER
+  if (scr==="disclaimer") return React.createElement('div', {style:W},
+    React.createElement(LB),
+    React.createElement('div', {style:{...PAD,textAlign:"center",paddingTop:40}},
+      React.createElement('div', {style:{fontSize:64,marginBottom:8}}, "🚨"),
+      React.createElement('h1', {style:{fontSize:26,fontWeight:900,color:"#0f172a",margin:"0 0 6px"}}, "112 Simulator"),
+      React.createElement('div', {style:{background:"#dc2626",color:"#fff",borderRadius:14,padding:"16px",marginBottom:16,fontWeight:700,fontSize:15}},
+        "⚠️ DIT IS GEEN ECHTE HULPDIENST",
+        React.createElement('br'),
+        React.createElement('span', {style:{fontWeight:400,fontSize:13}}, "Dit is een oefening en simulator")
+      ),
+      React.createElement(Card, null,
+        React.createElement('p', {style:{margin:"0 0 10px",fontSize:15,color:"#374151",lineHeight:1.6}},
+          React.createElement('strong', null, "Echte noodsituatie? Bel direct "),
+          React.createElement('strong', {style:{color:"#dc2626",fontSize:18}}, "112"), "."
+        ),
+        React.createElement('p', {style:{margin:0,fontSize:14,color:"#6b7280",lineHeight:1.6}}, "Deze app is uitsluitend bedoeld om kinderen te leren hoe een 112-gesprek werkt. Er wordt op geen enkel moment echte hulp geboden. De simulator geeft geen medische of andere instructies.")
+      ),
+      React.createElement(Card, null,
+        React.createElement('p', {style:{margin:"0 0 8px",fontWeight:700,fontSize:14}}, "👨‍👩‍👧 Aanbevolen voor ouders / begeleiders"),
+        React.createElement('p', {style:{margin:0,fontSize:13,color:"#6b7280",lineHeight:1.6}}, "Gebruik van deze app wordt aanbevolen onder begeleiding van een volwassene.")
+      ),
+      React.createElement('div', {
+        onClick:()=>setConfirmed(c=>!c),
+        style:{background:confirmed?"#f0fdf4":"#f8fafc",border:`2px solid ${confirmed?"#22c55e":"#d1d5db"}`,borderRadius:12,padding:"14px 16px",marginBottom:16,cursor:"pointer",display:"flex",alignItems:"center",gap:12}
+      },
+        React.createElement('div', {style:{width:24,height:24,borderRadius:6,border:`2.5px solid ${confirmed?"#22c55e":"#9ca3af"}`,background:confirmed?"#22c55e":"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}},
+          confirmed && React.createElement('span', {style:{color:"#fff",fontSize:15,fontWeight:900}}, "✓")
+        ),
+        React.createElement('p', {style:{margin:0,fontSize:14,color:confirmed?"#166534":"#374151",fontWeight:600}}, "Ik begrijp dat dit een simulator is en geen echte hulpdienst")
+      ),
+      React.createElement(Btn, {color:confirmed?"#16a34a":"#9ca3af",label:"Verder →",onClick:()=>confirmed&&go("ageSelect"),disabled:!confirmed})
+    )
+  );
+
+  // LEEFTIJD
+  if (scr==="ageSelect") return React.createElement('div', {style:W},
+    React.createElement(LB),
+    React.createElement('div', {style:{...PAD,textAlign:"center",paddingTop:24}},
+      React.createElement(MaxChar, {size:90}),
+      React.createElement('h2', {style:{fontSize:22,fontWeight:900,margin:"12px 0 6px",color:"#0f172a"}}, "Voor wie is deze oefening?"),
+      React.createElement('div', {style:{background:"#fef9c3",border:"2px solid #fde047",borderRadius:12,padding:12,marginBottom:20,fontSize:13,textAlign:"left"}},
+        "👨‍👩‍👧 ", React.createElement('strong', null, "Ouder of begeleider:"), " Kies de leeftijd van het kind."
+      ),
+      ...Object.values(MODES).map(m =>
+        React.createElement('button', {key:m.id, onClick:()=>{setMode(m.id);saveProg(null,null,m.id);go("menu");}, style:{display:"flex",alignItems:"center",gap:14,width:"100%",marginBottom:10,padding:"16px 20px",borderRadius:16,border:`2px solid ${m.primary}40`,background:m.light,cursor:"pointer",boxSizing:"border-box"}},
+          React.createElement('span', {style:{fontSize:36}}, m.icon),
+          React.createElement('div', {style:{textAlign:"left",flex:1}},
+            React.createElement('div', {style:{fontWeight:800,fontSize:17,color:m.primary}}, m.label),
+            React.createElement('div', {style:{fontSize:12,color:"#9ca3af",marginTop:2}}, m.id==='young'?"Begeleiding aanbevolen · Heel eenvoudig":m.id==='mid'?"Begeleiding aanbevolen · Fase 2 & 3 beschikbaar":"Zelfstandig · Volledig protocol")
+          ),
+          React.createElement('span', {style:{fontSize:20,color:m.primary}}, "→")
+        )
+      ),
+      voiceName && React.createElement('div', {style:{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:10,padding:"10px 14px",marginTop:8,fontSize:12,color:"#9ca3af",textAlign:"left"}},
+        "🎙️ Stem: ", React.createElement('strong', {style:{color:"#6b7280"}}, voiceName)
+      )
+    )
+  );
+
+  // MENU
+  if (scr==="menu") return React.createElement('div', {style:W},
+    React.createElement(LB),
+    React.createElement('div', {style:PAD},
+      React.createElement('div', {style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,paddingTop:4}},
+        React.createElement('div', {style:{display:"flex",alignItems:"center",gap:8}},
+          React.createElement(MaxChar, {size:50}),
+          React.createElement('div', null,
+            React.createElement('div', {style:{fontWeight:900,fontSize:16,color:"#0f172a"}}, "Hallo! Ik ben Max 👋"),
+            React.createElement('div', {style:{fontSize:12,color:"#9ca3af"}}, "Kies een hulpdienst!")
+          )
+        ),
+        React.createElement('button', {onClick:()=>go("ageSelect"), style:{background:"#f1f5f9",border:"none",borderRadius:10,padding:"6px 10px",fontSize:12,color:"#64748b",cursor:"pointer",fontWeight:600}}, M.icon+" "+M.label)
+      ),
+      ...["brandweer","ambulance","politie"].map(s => {
+        const v = SVC[s];
+        const done = SCENARIOS[s].every(sc => (progress[`${s}_${sc.id}`]||0)>=(mode==='young'?1:4));
+        return React.createElement('div', {key:s, onClick:()=>go("service",{svc:s}), style:{background:v.light,border:`2px solid ${v.color}`,borderRadius:16,padding:"16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:14}},
+          React.createElement('span', {style:{fontSize:36}}, v.icon),
+          React.createElement('div', {style:{flex:1}},
+            React.createElement('div', {style:{fontWeight:800,fontSize:M.fs+2,color:v.color}}, v.name),
+            React.createElement('div', {style:{fontSize:12,color:"#6b7280",marginTop:2}}, `${SCENARIOS[s].filter(sc=>(progress[`${s}_${sc.id}`]||0)>=(mode==='young'?1:4)).length}/${SCENARIOS[s].length} scenario's behaald`)
+          ),
+          React.createElement('span', {style:{fontSize:20}}, done?"✅":"→")
+        );
+      })
+    )
+  );
+
+  // SERVICE
+  if (scr==="service") return React.createElement('div', {style:W},
+    React.createElement(LB),
+    React.createElement('div', {style:PAD},
+      React.createElement('button', {onClick:()=>go("menu"), style:{background:"none",border:"none",fontSize:14,color:"#6b7280",cursor:"pointer",marginBottom:12,padding:0}}, "← Terug"),
+      React.createElement('div', {style:{textAlign:"center",marginBottom:20}},
+        React.createElement('div', {style:{fontSize:48}}, V.icon),
+        React.createElement('h2', {style:{fontSize:22,fontWeight:900,color:V.color,margin:"4px 0 2px"}}, V.name),
+        React.createElement('p', {style:{margin:0,fontSize:13,color:"#6b7280"}}, "Kies een fase")
+      ),
+      React.createElement(Card, null,
+        React.createElement('div', {style:{fontWeight:800,fontSize:16,color:"#1d4ed8",marginBottom:8}}, "🟢 Fase 1 — Leren & Quiz"),
+        ...SCENARIOS[svc].map((sc,i) => {
+          const pass = (progress[`${svc}_${sc.id}`]||0)>=(mode==='young'?1:4);
+          return React.createElement('div', {key:sc.id, onClick:()=>go("p1learn",{svc,scenIdx:i}), style:{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<SCENARIOS[svc].length-1?"1px solid #f1f5f9":"none",cursor:"pointer"}},
+            React.createElement('span', {style:{fontSize:22}}, sc.icon),
+            React.createElement('span', {style:{flex:1,fontSize:M.fs-1,fontWeight:600,color:"#374151"}}, sc.title+(sc.req?" ⭐":"")),
+            React.createElement('span', null, pass?"✅":"→")
+          );
+        })
+      ),
+      React.createElement(Card, null,
+        React.createElement('div', {style:{fontWeight:800,fontSize:16,color:"#7c3aed",marginBottom:6}}, "🔵 Fase 2 — Simulatiegesprek"),
+        unlocks.p2[svc]
+          ? React.createElement(Btn, {color:V.color,label:"Start simulatiegesprek →",onClick:()=>go("p2sim",{svc})})
+          : React.createElement('div', {style:{background:"#f1f5f9",borderRadius:10,padding:"12px",fontSize:13,color:"#94a3b8",textAlign:"center"}}, "🔒 Behaal voldoende bij een quiz om te ontgrendelen")
+      ),
+      React.createElement(Card, null,
+        React.createElement('div', {style:{fontWeight:800,fontSize:16,color:"#b45309",marginBottom:6}}, "🔴 Fase 3 — AI Gesprekssimulatie"),
+        unlocks.p3[svc]
+          ? React.createElement(Btn, {color:V.color,label:"Start AI simulatie →",onClick:()=>go("p3confirm",{svc})})
+          : React.createElement('div', {style:{background:"#f1f5f9",borderRadius:10,padding:"12px",fontSize:13,color:"#94a3b8",textAlign:"center"}}, "🔒 Behaal een voldoende in Fase 2 om te ontgrendelen")
+      )
+    )
+  );
+
+  // FASE 1 LEREN
+  if (scr==="p1learn") {
+    const sc = SCENARIOS[svc][scenIdx];
+    return React.createElement('div', {style:W},
+      React.createElement(LB),
+      React.createElement('div', {style:PAD},
+        React.createElement('button', {onClick:()=>go("service",{svc}), style:{background:"none",border:"none",fontSize:14,color:"#6b7280",cursor:"pointer",marginBottom:12,padding:0}}, "← Terug"),
+        React.createElement('div', {style:{textAlign:"center",marginBottom:16}},
+          React.createElement('div', {style:{fontSize:42}}, sc.icon),
+          React.createElement('h2', {style:{fontSize:M.fs+2,fontWeight:900,color:V.color,margin:"4px 0 2px"}}, sc.title),
+          React.createElement('p', {style:{margin:0,fontSize:13,color:"#9ca3af"}}, `Kaart ${cardIdx+1} van ${sc.cards.length}`)
+        ),
+        React.createElement('div', {style:{height:6,background:"#e5e7eb",borderRadius:4,marginBottom:18,overflow:"hidden"}},
+          React.createElement('div', {style:{height:"100%",width:`${((cardIdx+1)/sc.cards.length)*100}%`,background:V.color,borderRadius:4,transition:"width .4s"}})
+        ),
+        React.createElement(Card, null,
+          React.createElement('h3', {style:{margin:"0 0 10px",fontSize:M.fs+1,fontWeight:800,color:"#0f172a"}}, sc.cards[cardIdx].h),
+          React.createElement('p', {style:{margin:0,fontSize:M.fs,color:"#374151",lineHeight:1.7}}, sc.cards[cardIdx].t)
+        ),
+        React.createElement('div', {style:{display:"flex",gap:8}},
+          !muted && React.createElement('button', {onClick:()=>speak(sc.cards[cardIdx].h+'. '+sc.cards[cardIdx].t,'max'), style:{background:"#f1f5f9",border:"none",borderRadius:12,padding:"12px",fontSize:20,cursor:"pointer"}}, "🔊"),
+          cardIdx < sc.cards.length-1
+            ? React.createElement(Btn, {color:V.color,label:"Volgende kaart →",onClick:()=>setCardIdx(c=>c+1),style:{flex:1,marginBottom:0}})
+            : React.createElement(Btn, {color:V.color,label:"Start de quiz! 🎯",onClick:()=>go("p1quiz",{svc,scenIdx}),style:{flex:1,marginBottom:0}})
+        )
+      )
+    );
+  }
+
+  // FASE 1 QUIZ
+  if (scr==="p1quiz") {
+    const sc = SCENARIOS[svc][scenIdx];
+    const q = sc.quiz[qi];
+    const opts = mode==='young' ? q.opts.slice(0,2) : q.opts;
+    const isLast = qi===sc.quiz.length-1;
+
+    const handleAns = (i) => {
+      if (qSel!==null) return;
+      setQSel(i);
+      const correct = i===q.ans;
+      speak(correct ? q.ok : `Helaas, dat klopt niet. ${q.nok}`, 'max');
+      if (correct) setQScore(s=>s+1);
+      setTimeout(() => {
+        if (isLast) {
+          const fs = qScore+(correct?1:0);
+          const newProg = {...progress,[`${svc}_${sc.id}`]:fs};
+          setProgress(newProg);
+          let newUnl = {...unlocks};
+          if ((mode==='young'?fs>=1:fs>=4)) newUnl.p2={...newUnl.p2,[svc]:true};
+          setUnlocks(newUnl);
+          saveProg(newProg,newUnl);
+          setQScore(fs);
+          setScr("p1result");
+        } else { setQi(i2=>i2+1); setQSel(null); }
+      }, 2200);
+    };
+
+    return React.createElement('div', {style:W},
+      React.createElement(LB),
+      React.createElement('div', {style:PAD},
+        React.createElement('div', {style:{display:"flex",justifyContent:"space-between",marginBottom:8}},
+          React.createElement('span', {style:{fontWeight:700,color:V.color,fontSize:13}}, sc.title),
+          React.createElement('span', {style:{fontSize:13,color:"#9ca3af"}}, `Vraag ${qi+1}/${sc.quiz.length}`)
+        ),
+        React.createElement('div', {style:{height:6,background:"#e5e7eb",borderRadius:4,marginBottom:16,overflow:"hidden"}},
+          React.createElement('div', {style:{height:"100%",width:`${(qi/sc.quiz.length)*100}%`,background:V.color,borderRadius:4}})
+        ),
+        React.createElement(Card, null,
+          React.createElement('p', {style:{margin:0,fontSize:M.fs+1,fontWeight:700,color:"#0f172a",lineHeight:1.5}}, q.q)
+        ),
+        ...opts.map((o,i) => {
+          let bg="#f8fafc",col="#374151",bord="2px solid #e5e7eb";
+          if (qSel!==null) {
+            if(i===q.ans){bg="#dcfce7";col="#166534";bord="2px solid #22c55e";}
+            else if(i===qSel){bg="#fee2e2";col="#dc2626";bord="2px solid #dc2626";}
+            else{col="#d1d5db";}
+          }
+          return React.createElement('button', {key:i, onClick:()=>handleAns(i), style:{display:"block",width:"100%",marginBottom:10,padding:mode==='young'?"18px 16px":"13px 16px",borderRadius:12,border:bord,background:bg,color:col,fontSize:M.fs,fontWeight:600,cursor:qSel!==null?"default":"pointer",textAlign:"left",transition:"all .25s"}}, o);
+        }),
+        qSel!==null && React.createElement('div', {style:{background:qSel===q.ans?"#dcfce7":"#fee2e2",borderRadius:12,padding:"14px",fontSize:M.fs-1,lineHeight:1.6,color:qSel===q.ans?"#166534":"#dc2626",fontWeight:600}},
+          qSel===q.ans
+            ? `✅ ${q.ok}`
+            : React.createElement('span', null,
+                `❌ "${opts[qSel]}" is helaas niet het goede antwoord.`,
+                React.createElement('br'),
+                React.createElement('span', {style:{display:"block",marginTop:5,color:"#b91c1c"}}, `✅ Het juiste antwoord: "${q.opts[q.ans]}"`),
+                React.createElement('span', {style:{display:"block",marginTop:5,fontSize:M.fs-2,fontWeight:400,color:"#dc2626"}}, `💡 ${q.nok}`)
+              )
+        )
+      )
+    );
+  }
+
+  // FASE 1 RESULTAAT
+  if (scr==="p1result") {
+    const sc = SCENARIOS[svc][scenIdx];
+    const pass = mode==='young' ? qScore>=1 : qScore>=4;
+    const emoji = qScore===sc.quiz.length?"🌟":pass?"🎉":qScore>=3?"😊":"💪";
+    return React.createElement('div', {style:W},
+      React.createElement(LB),
+      React.createElement('div', {style:{...PAD,textAlign:"center",paddingTop:40}},
+        React.createElement('div', {style:{fontSize:72,marginBottom:10}}, emoji),
+        React.createElement('h2', {style:{fontSize:24,fontWeight:900,margin:"0 0 4px",color:"#0f172a"}}, pass?"Goed gedaan!":"Nog even oefenen!"),
+        React.createElement('p', {style:{fontSize:20,color:"#374151",marginBottom:6}}, "Score: ", React.createElement('strong', {style:{color:pass?V.color:"#dc2626"}}, `${qScore} / ${sc.quiz.length}`)),
+        React.createElement('p', {style:{fontSize:14,color:pass?"#16a34a":"#9ca3af",fontWeight:pass?700:400,marginBottom:24}}, pass?`✅ Fase 2 is nu beschikbaar voor de ${V.name}!`:"Je hebt meer goed nodig. Probeer het opnieuw!"),
+        React.createElement(Btn, {color:V.color,label:"Opnieuw proberen 🔄",onClick:()=>go("p1learn",{svc,scenIdx})}),
+        React.createElement(Btn, {color:"#64748b",label:"Terug naar overzicht",onClick:()=>go("service",{svc})})
+      )
+    );
+  }
+
+  // FASE 2
+  if (scr==="p2sim") {
+    const script = mode==='young' ? P2.young[svc] : P2.standard[svc];
+    const step = script.steps[p2step];
+
+    const handleP2 = (i) => {
+      if (p2sel!==null||p2done||p2retry) return;
+      setP2sel(i);
+      const correct = i===step.ans;
+      if (correct) {
+        speak(step.ok,'max');
+        if (!p2stepFailed) setP2score(s=>s+1);
+        setTimeout(() => {
+          if (p2step>=script.steps.length-1) {
+            const fs = p2score+(p2stepFailed?0:1);
+            if (mode==='young'?fs>=2:fs>=4) {
+              const newUnl = {...unlocks,p3:{...unlocks.p3,[svc]:true}};
+              setUnlocks(newUnl); saveProg(null,newUnl);
+            }
+            setP2score(fs); setP2done(true);
+          } else { setP2step(s=>s+1); setP2sel(null); setP2stepFailed(false); }
+        }, 1400);
+      } else {
+        setP2stepFailed(true); setP2retry(true);
+        speak(RETRY_MSG+' '+step.txt,'operator');
+        setTimeout(() => { setP2sel(null); setP2retry(false); }, 3500);
+      }
+    };
+
+    return React.createElement('div', {style:W},
+      React.createElement(LB),
+      React.createElement('div', {style:PAD},
+        React.createElement('button', {onClick:()=>go("service",{svc}), style:{background:"none",border:"none",fontSize:14,color:"#6b7280",cursor:"pointer",marginBottom:12,padding:0}}, "← Terug"),
+        React.createElement('div', {style:{textAlign:"center",marginBottom:14}},
+          React.createElement('div', {style:{fontSize:13,fontWeight:700,color:V.color,marginBottom:4}}, `📞 FASE 2 — ${V.name.toUpperCase()}`),
+          React.createElement('div', {style:{fontSize:13,color:"#9ca3af"}}, `Stap ${Math.min(p2step+1,script.steps.length)} van ${script.steps.length}`)
+        ),
+        ...script.steps.slice(0,p2step).map((s,i) =>
+          React.createElement('div', {key:i},
+            s.pre && React.createElement('div', {style:{textAlign:"center",fontSize:12,color:"#9ca3af",margin:"6px 0",fontStyle:"italic"}}, s.pre),
+            React.createElement('div', {style:{display:"flex",marginBottom:6}},
+              React.createElement('div', {style:{background:s.who==="driebergen"?"#dbeafe":"#e0e7ff",borderRadius:"12px 12px 12px 2px",padding:"10px 14px",fontSize:M.fs-1,color:"#1e3a5f",maxWidth:"80%"}},
+                React.createElement('div', {style:{fontSize:11,fontWeight:700,color:s.who==="driebergen"?"#1d4ed8":"#4338ca",marginBottom:4}}, s.who==="driebergen"?"📍 DRIEBERGEN":"📞 REGIONAAL"),
+                s.txt
+              )
+            ),
+            React.createElement('div', {style:{display:"flex",justifyContent:"flex-end",marginBottom:8}},
+              React.createElement('div', {style:{background:V.color,borderRadius:"12px 12px 2px 12px",padding:"10px 14px",fontSize:M.fs-1,color:"#fff",maxWidth:"80%"}}, s.opts[s.ans])
+            )
+          )
+        ),
+        !p2done && React.createElement('div', null,
+          step.pre && React.createElement('div', {style:{textAlign:"center",fontSize:12,color:"#9ca3af",margin:"6px 0",fontStyle:"italic"}}, step.pre),
+          React.createElement('div', {style:{display:"flex",marginBottom:12}},
+            React.createElement('div', {style:{background:step.who==="driebergen"?"#dbeafe":"#e0e7ff",borderRadius:"12px 12px 12px 2px",padding:"10px 14px",fontSize:M.fs-1,color:"#1e3a5f",maxWidth:"85%"}},
+              React.createElement('div', {style:{fontSize:11,fontWeight:700,color:step.who==="driebergen"?"#1d4ed8":"#4338ca",marginBottom:4}}, step.who==="driebergen"?"📍 DRIEBERGEN":"📞 REGIONAAL"),
+              p2retry
+                ? React.createElement('span', null, React.createElement('span', {style:{color:"#b45309",fontWeight:700}}, `"${RETRY_MSG}"`), React.createElement('br'), React.createElement('br'), step.txt)
+                : step.txt
+            )
+          ),
+          p2retry && React.createElement('div', {style:{background:"#fffbeb",border:"2px solid #fbbf24",borderRadius:10,padding:"10px 14px",marginBottom:10,fontSize:13,color:"#92400e",fontWeight:600}}, "💛 Neem even de tijd — lees de vraag goed."),
+          React.createElement('div', {style:{fontSize:13,fontWeight:700,color:"#374151",marginBottom:8}}, "Jouw antwoord:"),
+          ...step.opts.map((o,i) => {
+            let bg="#f8fafc",col="#374151",bord="2px solid #e5e7eb";
+            if (p2sel!==null&&!p2retry) {
+              if(i===step.ans){bg="#dcfce7";col="#166534";bord="2px solid #22c55e";}
+              else if(i===p2sel){bg="#fee2e2";col="#dc2626";bord="2px solid #dc2626";}
+              else{col="#d1d5db";}
+            }
+            return React.createElement('button', {key:i, onClick:()=>handleP2(i), style:{display:"block",width:"100%",marginBottom:10,padding:mode==='young'?"16px 14px":"12px 14px",borderRadius:12,border:bord,background:bg,color:col,fontSize:M.fs,fontWeight:600,cursor:(p2sel!==null||p2retry)?"default":"pointer",textAlign:"left",transition:"all .25s"}}, o);
+          }),
+          p2sel!==null&&!p2retry&&p2sel===step.ans && React.createElement('div', {style:{background:"#dcfce7",borderRadius:10,padding:"12px",fontSize:13,color:"#166534",fontWeight:600}}, `✅ ${step.ok}`)
+        ),
+        p2done && React.createElement('div', null,
+          React.createElement('div', {style:{background:"#1e293b",color:"#fff",borderRadius:14,padding:"16px",textAlign:"center",marginBottom:12}},
+            React.createElement('div', {style:{fontSize:13,fontWeight:700,color:"#fbbf24",marginBottom:6}}, "📞 CENTRALIST"),
+            React.createElement('div', {style:{fontSize:M.fs+1,fontWeight:700}}, script.closing)
+          ),
+          React.createElement('div', {style:{background:"#eff6ff",border:"2px solid #93c5fd",borderRadius:12,padding:"14px",marginBottom:12}},
+            React.createElement('div', {style:{fontSize:13,fontWeight:800,color:"#1d4ed8",marginBottom:6}}, "ℹ️ Wist je dat?"),
+            React.createElement('p', {style:{margin:0,fontSize:13,color:"#1e40af",lineHeight:1.6}}, script.info)
+          ),
+          React.createElement('div', {style:{textAlign:"center",marginBottom:12}},
+            React.createElement('div', {style:{fontSize:48}}, p2score>=(mode==='young'?2:4)?"🎉":"💪"),
+            React.createElement('p', {style:{fontSize:16,fontWeight:700,color:"#0f172a"}}, "Score: ", React.createElement('span', {style:{color:p2score>=(mode==='young'?2:4)?V.color:"#dc2626"}}, `${p2score}/${script.steps.length}`)),
+            p2score>=(mode==='young'?2:4) && React.createElement('p', {style:{fontSize:13,color:"#16a34a",fontWeight:700}}, "✅ Fase 3 is nu ontgrendeld!")
+          ),
+          React.createElement(Btn, {color:V.color,label:"Opnieuw proberen 🔄",onClick:()=>go("p2sim",{svc})}),
+          React.createElement(Btn, {color:"#64748b",label:"Terug naar overzicht",onClick:()=>go("service",{svc})})
+        )
+      )
+    );
+  }
+
+  // FASE 3 BEVESTIGING
+  if (scr==="p3confirm") return React.createElement('div', {style:W},
+    React.createElement(LB),
+    React.createElement('div', {style:{...PAD,textAlign:"center",paddingTop:40}},
+      React.createElement('div', {style:{fontSize:56}}, "🎙️"),
+      React.createElement('h2', {style:{fontSize:22,fontWeight:900,margin:"12px 0 8px",color:"#0f172a"}}, "Fase 3 — AI Simulatie"),
+      React.createElement('div', {style:{background:"#dc2626",color:"#fff",borderRadius:12,padding:"14px",marginBottom:16,fontWeight:700,fontSize:14}}, "⚠️ Dit is een oefening — geen echt gesprek met 112"),
+      React.createElement(Card, {style:{textAlign:"left"}},
+        React.createElement('p', {style:{margin:"0 0 8px",fontSize:14,color:"#374151",lineHeight:1.6}}, "In Fase 3 voer je een zo realistisch mogelijk gesprek met een AI-centralist. Het gesprek eindigt zodra de centralist alle informatie heeft."),
+        React.createElement('p', {style:{margin:0,fontSize:13,color:"#6b7280",lineHeight:1.6}}, "De centralist geeft op geen enkel moment instructies over wat je moet doen.")
+      ),
+      React.createElement('div', {onClick:()=>setP3confirmed(c=>!c), style:{background:p3confirmed?"#f0fdf4":"#f8fafc",border:`2px solid ${p3confirmed?"#22c55e":"#d1d5db"}`,borderRadius:12,padding:"14px 16px",marginBottom:16,cursor:"pointer",display:"flex",alignItems:"center",gap:12}},
+        React.createElement('div', {style:{width:24,height:24,borderRadius:6,border:`2.5px solid ${p3confirmed?"#22c55e":"#9ca3af"}`,background:p3confirmed?"#22c55e":"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}},
+          p3confirmed && React.createElement('span', {style:{color:"#fff",fontSize:15,fontWeight:900}}, "✓")
+        ),
+        React.createElement('p', {style:{margin:0,fontSize:14,color:p3confirmed?"#166534":"#374151",fontWeight:600}}, "Ik begrijp dat dit een oefening is en geen echt gesprek met 112")
+      ),
+      React.createElement(Btn, {color:p3confirmed?V.color:"#9ca3af",label:"Start simulatie →",onClick:()=>p3confirmed&&go("p3sim",{svc}),disabled:!p3confirmed}),
+      React.createElement(Btn, {color:"#64748b",label:"Terug",onClick:()=>go("service",{svc})})
+    )
+  );
+
+  // FASE 3 AI
+  if (scr==="p3sim") {
+    const scenario = svc==='brandweer'?'brand in een woonhuis':svc==='ambulance'?'iemand die bewusteloos op de grond ligt':'een vechtpartij op straat';
+    const sysPrompt = M.p3sys + ` Scenario: ${scenario}.`;
+
+    const sendMsg = async () => {
+      const msg = p3inp.trim();
+      if (!msg||p3busy||p3end) return;
+      const newMsgs = [...p3msgs,{r:"user",t:msg}];
+      setP3msgs(newMsgs); setP3inp(""); setP3busy(true);
+      try {
+        const res = await fetch("https://api.anthropic.com/v1/messages",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            model:"claude-sonnet-4-20250514",
+            max_tokens:200,
+            system:sysPrompt,
+            messages:newMsgs.map(m=>({role:m.r==="user"?"user":"assistant",content:m.t})),
+          })
+        });
+        const data = await res.json();
+        const raw = data.content?.[0]?.text||"...";
+        const done = raw.includes("[KLAAR]");
+        const clean = raw.replace("[KLAAR]","").trim();
+        setP3msgs([...newMsgs,{r:"assistant",t:clean}]);
+        if (done) setP3end(true);
+      } catch { setP3msgs(m=>[...m,{r:"assistant",t:"[Verbinding verbroken. Probeer opnieuw.]"}]); }
+      setP3busy(false);
+    };
+
+    return React.createElement('div', {style:{...W,display:"flex",flexDirection:"column",height:"100vh"}},
+      React.createElement(LB),
+      React.createElement('div', {style:{padding:"12px 16px",background:M.light,borderBottom:`2px solid ${M.primary}`,flexShrink:0}},
+        React.createElement('button', {onClick:()=>go("service",{svc}), style:{background:"none",border:"none",fontSize:13,color:M.primary,cursor:"pointer",padding:0,fontWeight:700}}, "← Terug"),
+        React.createElement('div', {style:{textAlign:"center",fontSize:14,fontWeight:800,color:M.primary}}, `📞 FASE 3 — AI SIMULATIE: ${V.name.toUpperCase()}`),
+        React.createElement('div', {style:{textAlign:"center",fontSize:11,color:"#9ca3af",marginTop:2}}, "⚠️ Simulator — Geen echte hulpdienst")
+      ),
+      React.createElement('div', {ref:msgsRef, style:{flex:1,overflowY:"auto",padding:"16px",background:"#f8fafc"}},
+        p3msgs.length===0 && React.createElement('div', {style:{textAlign:"center",color:"#9ca3af",fontSize:14,padding:"40px 0"}},
+          React.createElement('div', {style:{fontSize:40,marginBottom:8}}, "📱"),
+          mode==='young'?"Zeg 'Hallo' om te beginnen!":"Typ iets om het gesprek te starten.",
+          React.createElement('br'),
+          React.createElement('span', {style:{fontSize:12,color:"#cbd5e1"}}, "Bijv: \"Hallo, ik moet bellen\"")
+        ),
+        ...p3msgs.map((m,i) =>
+          React.createElement('div', {key:i, style:{display:"flex",justifyContent:m.r==="user"?"flex-end":"flex-start",marginBottom:10}},
+            React.createElement('div', {style:{background:m.r==="user"?M.primary:"#fff",color:m.r==="user"?"#fff":"#1e293b",borderRadius:m.r==="user"?"16px 16px 2px 16px":"16px 16px 16px 2px",padding:"11px 15px",fontSize:M.fs,maxWidth:"82%",boxShadow:m.r==="assistant"?"0 1px 4px rgba(0,0,0,.08)":"none",border:m.r==="assistant"?"1px solid #e5e7eb":"none",lineHeight:1.55}},
+              m.r==="assistant" && React.createElement('div', {style:{fontSize:11,fontWeight:800,color:M.primary,marginBottom:4}}, "📞 CENTRALIST"),
+              m.t,
+              m.r==="assistant" && !muted && React.createElement('button', {onClick:()=>speak(m.t,'operator'), style:{background:"none",border:"none",fontSize:12,cursor:"pointer",color:"#9ca3af",padding:"0 0 0 8px"}}, "🔊")
+            )
+          )
+        ),
+        p3busy && React.createElement('div', {style:{display:"flex",gap:4,padding:"10px 14px",background:"#fff",borderRadius:16,width:"fit-content",border:"1px solid #e5e7eb"}},
+          ...[0,1,2].map(i => React.createElement('div', {key:i, style:{width:8,height:8,borderRadius:"50%",background:M.primary,animation:"bounce .8s infinite",animationDelay:`${i*.2}s`}}))
+        ),
+        p3end && React.createElement('div', {style:{background:"#f0fdf4",border:"2px solid #22c55e",borderRadius:14,padding:"14px",margin:"12px 0",textAlign:"center"}},
+          React.createElement('div', {style:{fontSize:28,marginBottom:4}}, "✅"),
+          React.createElement('p', {style:{margin:"0 0 4px",fontWeight:800,color:"#166534",fontSize:M.fs}}, "Gesprek afgerond!"),
+          React.createElement('p', {style:{margin:0,fontSize:13,color:"#15803d"}}, `De ${V.name} is onderweg.`)
+        )
+      ),
+      !p3end && React.createElement('div', {style:{padding:"12px 16px",borderTop:"1px solid #e5e7eb",background:"#fff",display:"flex",gap:8,flexShrink:0}},
+        React.createElement('input', {value:p3inp, onChange:e=>setP3inp(e.target.value), onKeyDown:e=>e.key==="Enter"&&sendMsg(), placeholder:"Typ jouw antwoord...", style:{flex:1,border:"2px solid #e5e7eb",borderRadius:12,padding:"12px 14px",fontSize:M.fs,outline:"none",color:"#0f172a"}}),
+        React.createElement('button', {onClick:sendMsg, disabled:p3busy, style:{background:p3busy?"#d1d5db":M.primary,color:"#fff",border:"none",borderRadius:12,padding:"12px 18px",fontSize:18,cursor:p3busy?"default":"pointer",fontWeight:700}}, "➤")
+      ),
+      p3end && React.createElement('div', {style:{padding:"12px 16px",borderTop:"1px solid #e5e7eb",background:"#fff",flexShrink:0}},
+        React.createElement(Btn, {color:M.primary,label:"Opnieuw proberen 🔄",onClick:()=>go("p3sim",{svc}),style:{marginBottom:6}}),
+        React.createElement(Btn, {color:"#64748b",label:"Terug naar overzicht",onClick:()=>go("service",{svc}),style:{marginBottom:0}})
+      ),
+      React.createElement('style', null, "@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}")
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
